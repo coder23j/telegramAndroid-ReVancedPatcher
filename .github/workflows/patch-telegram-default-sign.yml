@@ -7,7 +7,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   patch-telegram-default-sign:
@@ -127,6 +127,34 @@ jobs:
 
           test -s work/telegramx-lollipop-patched-default-sign-latest.apk
           cp work/telegramx-lollipop-patched-default-sign-latest.apk "work/telegramx-lollipop-patched-default-sign-${{ steps.release.outputs.telegramx_tag }}-${{ steps.release.outputs.experiments_tag }}-${{ steps.release.outputs.cli_tag }}.apk"
+
+      - name: Publish or overwrite release APK (default sign)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+
+          release_tag="telegram-patched-default-sign-latest"
+          release_title="Telegram/Telegram X Patched Latest (Default Sign)"
+          release_notes="$(cat <<'NOTES'
+          Auto-updated by GitHub Actions (default signing, no custom keystore).
+
+          - ReVancedExperiments: ${{ steps.release.outputs.experiments_tag }}
+          - revanced-cli: ${{ steps.release.outputs.cli_tag }}
+          - Telegram-X: ${{ steps.release.outputs.telegramx_tag }}
+          - Source APK: https://telegram.org/dl/android/apk
+          - Source Telegram-X: https://github.com/TGX-Android/Telegram-X/releases
+          NOTES
+          )"
+
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release edit "$release_tag" --title "$release_title" --notes "$release_notes"
+          else
+            gh release create "$release_tag" --title "$release_title" --notes "$release_notes"
+          fi
+
+          gh release upload "$release_tag" work/telegram-patched-default-sign-latest.apk --clobber
+          gh release upload "$release_tag" work/telegramx-lollipop-patched-default-sign-latest.apk --clobber
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
