@@ -1,0 +1,132 @@
+name: Patch Telegram APK
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-telegram:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Resolve latest releases (jq)
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+
+          auth_header="Authorization: Bearer ${GITHUB_TOKEN}"
+          accept_header="Accept: application/vnd.github+json"
+
+          cli_json="$(
+            curl -fsSL \
+              -H "$accept_header" \
+              -H "$auth_header" \
+              "https://api.github.com/repos/ReVanced/revanced-cli/releases/latest"
+          )"
+
+          exp_json="$(
+            curl -fsSL \
+              -H "$accept_header" \
+              -H "$auth_header" \
+              "https://api.github.com/repos/Aunali321/ReVancedExperiments/releases/latest"
+          )"
+
+          cli_url="$(jq -r '.assets[] | select(.name | endswith("-all.jar")) | .browser_download_url' <<<"$cli_json" | head -n1)"
+          cli_tag="$(jq -r '.tag_name' <<<"$cli_json")"
+
+          patches_url="$(jq -r '.assets[] | select((.name | endswith(".rvp")) and ((.name | endswith(".rvp.asc")) | not)) | .browser_download_url' <<<"$exp_json" | head -n1)"
+          experiments_tag="$(jq -r '.tag_name' <<<"$exp_json")"
+
+          test -n "$cli_url"
+          test -n "$patches_url"
+
+          {
+            echo "cli_url=$cli_url"
+            echo "cli_tag=$cli_tag"
+            echo "patches_url=$patches_url"
+            echo "experiments_tag=$experiments_tag"
+          } >> "$GITHUB_OUTPUT"
+
+          jq -n \
+            --arg cli_url "$cli_url" \
+            --arg cli_tag "$cli_tag" \
+            --arg patches_url "$patches_url" \
+            --arg experiments_tag "$experiments_tag" \
+            '{
+              cli_url: $cli_url,
+              cli_tag: $cli_tag,
+              patches_url: $patches_url,
+              experiments_tag: $experiments_tag
+            }' > release-metadata.json
+
+      - name: Download CLI / patches / Telegram APK
+        run: |
+          set -euxo pipefail
+          mkdir -p work
+
+          curl -fL "${{ steps.release.outputs.cli_url }}" -o work/revanced-cli.jar
+          curl -fL "${{ steps.release.outputs.patches_url }}" -o work/patches.rvp
+          curl -fL "https://telegram.org/dl/android/apk" -o work/telegram.apk
+
+      - name: Check patch availability for Telegram
+        run: |
+          set -euxo pipefail
+          java -jar work/revanced-cli.jar list-patches --packages --versions -bp work/patches.rvp | tee work/list-patches.txt
+          grep -Eqi "telegram|org\\.telegram\\.messenger" work/list-patches.txt
+
+      - name: Patch Telegram APK
+        run: |
+          set -euxo pipefail
+          java -jar work/revanced-cli.jar patch -bp work/patches.rvp work/telegram.apk
+
+          patched_apk="$(find work -maxdepth 1 -type f -name '*-patched.apk' | head -n1)"
+          test -n "$patched_apk"
+
+          cp "$patched_apk" "work/telegram-patched-${{ steps.release.outputs.experiments_tag }}-${{ steps.release.outputs.cli_tag }}.apk"
+          mv "$patched_apk" "work/telegram-patched-latest.apk"
+
+      - name: Publish or overwrite release APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+
+          release_tag="telegram-patched-latest"
+          release_title="Telegram Patched Latest"
+          release_notes="Auto-updated by GitHub Actions.
+
+          - ReVancedExperiments: ${{ steps.release.outputs.experiments_tag }}
+          - revanced-cli: ${{ steps.release.outputs.cli_tag }}
+          - Source APK: https://telegram.org/dl/android/apk"
+
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release edit "$release_tag" --title "$release_title" --notes "$release_notes"
+          else
+            gh release create "$release_tag" --title "$release_title" --notes "$release_notes"
+          fi
+
+          gh release upload "$release_tag" work/telegram-patched-latest.apk --clobber
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-patched-${{ steps.release.outputs.experiments_tag }}-${{ steps.release.outputs.cli_tag }}
+          path: |
+            work/*.apk
+            work/list-patches.txt
+            release-metadata.json
+          if-no-files-found: error
