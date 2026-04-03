@@ -88,18 +88,39 @@ jobs:
           java -jar work/revanced-cli.jar list-patches --packages --versions -bp work/patches.rvp | tee work/list-patches.txt
           grep -Eqi "telegram|org\\.telegram\\.messenger" work/list-patches.txt
 
-      - name: Patch Telegram APK
+      - name: Prepare signing keystore
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+          test -n "${ANDROID_KEYSTORE_B64}"
+          echo "${ANDROID_KEYSTORE_B64}" | base64 -d > work/release.keystore
+          test -s work/release.keystore
 
-          rm -f ./*-patched.apk work/*-patched.apk
-          java -jar work/revanced-cli.jar patch -bp work/patches.rvp work/telegram.apk
+      - name: Patch Telegram APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_KEYSTORE_PASSWORD}"
+          test -n "${ANDROID_KEY_ALIAS}"
+          test -n "${ANDROID_KEY_PASSWORD}"
 
-          patched_apk="$(find . work -maxdepth 2 -type f -name '*-patched.apk' | head -n1)"
-          test -n "$patched_apk"
+          rm -f work/telegram-patched-latest.apk
+          java -jar work/revanced-cli.jar patch \
+            -bp work/patches.rvp \
+            --keystore work/release.keystore \
+            --keystore-password "${ANDROID_KEYSTORE_PASSWORD}" \
+            --keystore-entry-alias "${ANDROID_KEY_ALIAS}" \
+            --keystore-entry-password "${ANDROID_KEY_PASSWORD}" \
+            --signer "TelegramReVanced" \
+            -o work/telegram-patched-latest.apk \
+            work/telegram.apk
 
-          cp "$patched_apk" "work/telegram-patched-${{ steps.release.outputs.experiments_tag }}-${{ steps.release.outputs.cli_tag }}.apk"
-          mv "$patched_apk" "work/telegram-patched-latest.apk"
+          test -s work/telegram-patched-latest.apk
+          cp work/telegram-patched-latest.apk "work/telegram-patched-${{ steps.release.outputs.experiments_tag }}-${{ steps.release.outputs.cli_tag }}.apk"
 
       - name: Publish or overwrite release APK
         env:
