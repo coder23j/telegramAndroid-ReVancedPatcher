@@ -48,20 +48,32 @@ jobs:
               "https://api.github.com/repos/Aunali321/ReVancedExperiments/releases/latest"
           )"
 
+          tgx_json="$(
+            curl -fsSL \
+              -H "$accept_header" \
+              -H "$auth_header" \
+              "https://api.github.com/repos/TGX-Android/Telegram-X/releases/latest"
+          )"
+
           cli_url="$(jq -r '.assets[] | select(.name | endswith("-all.jar")) | .browser_download_url' <<<"$cli_json" | head -n1)"
           cli_tag="$(jq -r '.tag_name' <<<"$cli_json")"
 
           patches_url="$(jq -r '.assets[] | select((.name | endswith(".rvp")) and ((.name | endswith(".rvp.asc")) | not)) | .browser_download_url' <<<"$exp_json" | head -n1)"
           experiments_tag="$(jq -r '.tag_name' <<<"$exp_json")"
+          telegramx_lollipop_url="$(jq -r '.assets[] | select((.name | test("(?i)lollipop")) and (.name | endswith(".apk"))) | .browser_download_url' <<<"$tgx_json" | head -n1)"
+          telegramx_tag="$(jq -r '.tag_name' <<<"$tgx_json")"
 
           test -n "$cli_url"
           test -n "$patches_url"
+          test -n "$telegramx_lollipop_url"
 
           {
             echo "cli_url=$cli_url"
             echo "cli_tag=$cli_tag"
             echo "patches_url=$patches_url"
             echo "experiments_tag=$experiments_tag"
+            echo "telegramx_lollipop_url=$telegramx_lollipop_url"
+            echo "telegramx_tag=$telegramx_tag"
           } >> "$GITHUB_OUTPUT"
 
           jq -n \
@@ -69,14 +81,18 @@ jobs:
             --arg cli_tag "$cli_tag" \
             --arg patches_url "$patches_url" \
             --arg experiments_tag "$experiments_tag" \
+            --arg telegramx_lollipop_url "$telegramx_lollipop_url" \
+            --arg telegramx_tag "$telegramx_tag" \
             '{
               cli_url: $cli_url,
               cli_tag: $cli_tag,
               patches_url: $patches_url,
-              experiments_tag: $experiments_tag
+              experiments_tag: $experiments_tag,
+              telegramx_lollipop_url: $telegramx_lollipop_url,
+              telegramx_tag: $telegramx_tag
             }' > release-metadata.json
 
-      - name: Download CLI / patches / Telegram APK
+      - name: Download CLI / patches / Telegram / Telegram X (lollipop) APK
         run: |
           set -euxo pipefail
           mkdir -p work
@@ -84,6 +100,7 @@ jobs:
           curl -fL "${{ steps.release.outputs.cli_url }}" -o work/revanced-cli.jar
           curl -fL "${{ steps.release.outputs.patches_url }}" -o work/patches.rvp
           curl -fL "https://telegram.org/dl/android/apk" -o work/telegram.apk
+          curl -fL "${{ steps.release.outputs.telegramx_lollipop_url }}" -o work/telegramx-lollipop.apk
 
       - name: Check patch availability for Telegram
         run: |
@@ -125,6 +142,31 @@ jobs:
           test -s work/telegram-patched-latest.apk
           cp work/telegram-patched-latest.apk "work/telegram-patched-${{ steps.release.outputs.experiments_tag }}-${{ steps.release.outputs.cli_tag }}.apk"
 
+      - name: Patch Telegram X Lollipop APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_KEYSTORE_PASSWORD}"
+          test -n "${ANDROID_KEY_ALIAS}"
+          test -n "${ANDROID_KEY_PASSWORD}"
+
+          rm -f work/telegramx-lollipop-patched-latest.apk
+          java -jar work/revanced-cli.jar patch \
+            -bp work/patches.rvp \
+            --keystore work/release.keystore \
+            --keystore-password "${ANDROID_KEYSTORE_PASSWORD}" \
+            --keystore-entry-alias "${ANDROID_KEY_ALIAS}" \
+            --keystore-entry-password "${ANDROID_KEY_PASSWORD}" \
+            --signer "TelegramReVanced" \
+            -o work/telegramx-lollipop-patched-latest.apk \
+            work/telegramx-lollipop.apk
+
+          test -s work/telegramx-lollipop-patched-latest.apk
+          cp work/telegramx-lollipop-patched-latest.apk "work/telegramx-lollipop-patched-${{ steps.release.outputs.telegramx_tag }}-${{ steps.release.outputs.experiments_tag }}-${{ steps.release.outputs.cli_tag }}.apk"
+
       - name: Publish or overwrite release APK
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -133,11 +175,16 @@ jobs:
 
           release_tag="telegram-patched-latest"
           release_title="Telegram Patched Latest"
-          release_notes="Auto-updated by GitHub Actions.
+          release_notes="$(cat <<'NOTES'
+          Auto-updated by GitHub Actions.
 
           - ReVancedExperiments: ${{ steps.release.outputs.experiments_tag }}
           - revanced-cli: ${{ steps.release.outputs.cli_tag }}
-          - Source APK: https://telegram.org/dl/android/apk"
+          - Telegram-X: ${{ steps.release.outputs.telegramx_tag }}
+          - Source APK: https://telegram.org/dl/android/apk
+          - Source Telegram-X: https://github.com/TGX-Android/Telegram-X/releases
+          NOTES
+          )"
 
           if gh release view "$release_tag" >/dev/null 2>&1; then
             gh release edit "$release_tag" --title "$release_title" --notes "$release_notes"
@@ -146,6 +193,7 @@ jobs:
           fi
 
           gh release upload "$release_tag" work/telegram-patched-latest.apk --clobber
+          gh release upload "$release_tag" work/telegramx-lollipop-patched-latest.apk --clobber
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
